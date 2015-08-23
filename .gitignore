@@ -1,0 +1,7 @@
+.DS_Store
+.RData
+.Rhistory
+rsconnect/
+Human_Activity_Recognition_cache/
+Human_Activity_Recognition_files/
+*~

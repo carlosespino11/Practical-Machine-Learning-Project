@@ -1,0 +1,160 @@
+---
+title: "Human Activity Recognition"
+author: "Carlos Espino Garcia"
+date: "July 24, 2015"
+output: html_document
+---
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+library(caret)
+library(dplyr)
+library(lubridate)
+library(xtable)
+
+source("utils.R")
+
+```
+# Overview
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The goal is to predict the manner in which they did the exercise.
+
+
+# Data processing
+The testing and training data sets are already separated. However, the 30% the training data was taken for validating the model and estimating the test error. 
+
+The dataset was processes as following:
+1. Read the training and testing datasets
+```{r eval=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+download_data = function() {
+  if(!file.exists("training.csv")){
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "training.csv")
+  }
+  if(!file.exists("testing.csv")){
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "testing.csv")
+  }
+}
+```
+
+2. There are many measures where every or almost every observations are NA. The rule of thumb used to drop this variables is to drop of the variables where more than 95% of observations contains NA's.
+3. For the datetime variable cvtd_timestamp, the date is parsed and two new measures are calculated: hour of the day and day of the week.
+4. This way of processing data reduces the number of features from 160 to 57.
+
+```{r eval=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+clean_data = function(data) { 
+  data = data %>% as.tbl() %>% 
+    mutate(cvtd_timestamp = dmy_hm(cvtd_timestamp), day = wday(cvtd_timestamp, label=T), 
+           hour = factor(hour(cvtd_timestamp))) %>% select(new_window:hour) 
+  
+  data[,which(!apply(data,2,FUN = function(x){(sum(is.na(x))/length(x)) > .95}))]
+}
+
+```
+
+5. Split the training dataset in two: 30% for validation and 70% for training the model.
+The code to to this is the following 
+```{r eval=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+training = read.csv("training.csv", na.strings=c("NA","","#DIV/0!")) %>% clean_data()
+testing = read.csv("testing.csv", na.strings=c("NA","","#DIV/0!")) %>% clean_data()
+
+set.seed(11)
+inTrain = createDataPartition(y = training$classe, p=0.7, list=FALSE)
+
+training = training[inTrain, ]
+validation = training[-inTrain, ]
+```
+
+
+# Model selection
+This is a supervised problem where the goal is to predict **classe** which contains 5 categories.
+Therefore, the tested algorithms were Generalized Linear Model with regularization (```glmnet```), Gradient Boosting (```gbm```), Random Forests (```rf```) and Support Vector Machines (```svmLinear```). A 10-fold cross validation is used to build the model to reduce the risk of over-fitting. The metric used to select the model is the **accuracy** applied to the validation dataset. 
+
+```{r eval=FALSE}
+
+set.seed(7)
+
+fitControl <- trainControl(method = "cv", number = 10)
+
+glmnet_fit = train(classe~., training, 
+                  method = "glmnet",
+                  preProc = c("center", "scale"),
+                  trControl = fitControl)
+
+gbm_fit = train(classe~., training, 
+                method = "gbm",
+                preProc = c("center", "scale"),
+                trControl = fitControl)
+
+rf_fit = train(classe~., training, 
+                method = "rf",
+                preProc = c("center", "scale"),
+                trControl = fitControl)
+
+svm_fit = train(classe~., training, 
+                method = "svmLinear",
+                preProc = c("center", "scale"),
+                trControl = fitControl)
+```
+
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message==FALSE}
+load("rf_fit.rda")
+load("gbm_fit.rda")
+load("glmnet_fit.rda")
+load("svm_fit.rda")
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+glmnet_predict = predict(glmnet_fit, validation)
+glment_cm = confusionMatrix(glmnet_predict, validation$classe)
+
+gbm_predict = predict(gbm_fit, validation)
+gbm_cm = confusionMatrix(gbm_predict, validation$classe)
+
+rf_predict = predict(rf_fit, validation)
+rf_cm = confusionMatrix(rf_predict, validation$classe)
+
+svm_predict = predict(svm_fit, validation)
+svm_cm = confusionMatrix(svm_predict, validation$classe)
+
+kappa_table = data.frame(accuracy = c(glment_cm$overall["Accuracy"],
+                                      gbm_cm$overall["Accuracy"],
+                                      rf_cm$overall["Accuracy"],
+                                      svm_cm$overall["Accuracy"]))
+
+row.names(kappa_table) = c("glmnet", "gbm", "rf", "svm")
+```
+
+The accuracy for each of the models is:
+
+```{r echo=FALSE,results='asis'}
+print(xtable(kappa_table), comment = getOption("xtable.comment", FALSE), type="html")
+```
+
+We can see that the algorithm with the highest accuracy is rf (random forests), therefore we keep this algorithm to make the predictions. We expect the out of sample error to be 0 according to the error estimate using cross-validation 
+
+## Model validation
+In the next figure, we can see other metrics to evaluate the algorithm and the confusion matrix as well.
+
+```{r echo=FALSE}
+rf_predict = predict(rf_fit, validation)
+confusionMatrix(rf_predict, validation$classe)
+```
+
+We can appreciate that this model has a 100% accuracy in the validation set. We expect the algorithm to have an accuracy in the interval (0.9991, 1).
+
+Now, we can see the importance of the predictors in the following figure:
+```{r echo=FALSE, fig.height=9}
+plot(varImp(rf_fit))
+```
+
+The most important features for prediction are num,window, roll_belt, pitch_forearm, yaw_belt,
+pitch_belt and magnet_dumbbell_y,
+
+Now, we predict in the test dataset and we get the following predictions:
+
+```{r echo=FALSE}
+print(as.data.frame(predict(rf_fit,testing)))
+```
+
+All the predictions were correct.
